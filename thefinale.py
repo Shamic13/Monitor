@@ -37,17 +37,28 @@ def get_hardware_data():
         hw.Update()
         hw_type = str(hw.HardwareType).lower()
 
-        # Парсинг процессора
+        # Парсинг процессора (УНИВЕРСАЛЬНЫЙ ДЛЯ INTEL И AMD)
         if "cpu" in hw_type:
             for sensor in hw.Sensors:
                 if sensor.Value is None: continue
                 s_type = str(sensor.SensorType).lower()
                 s_name = str(sensor.Name).lower()
 
-                if s_type == "temperature" and ("package" in s_name or "core" in s_name):
-                    if cpu_temp == 0: cpu_temp = int(sensor.Value)
+                if s_type == "temperature":
+                    if "package" in s_name or "tctl" in s_name or "tdie" in s_name:
+                        cpu_temp = int(sensor.Value)
+
+                    elif "core" in s_name and cpu_temp == 0:
+                        cpu_temp = int(sensor.Value)
+
                 elif s_type == "power" and "package" in s_name:
                     cpu_power = int(sensor.Value)
+
+            if cpu_temp == 0:
+                for sensor in hw.Sensors:
+                    if sensor.Value is not None and str(sensor.SensorType).lower() == "temperature":
+                        cpu_temp = int(sensor.Value)
+                        break
 
         # Парсинг видеокарты
         elif "gpu" in hw_type:
