@@ -25,7 +25,24 @@ from LibreHardwareMonitor import Hardware
 computer = Hardware.Computer()
 computer.IsCpuEnabled = True
 computer.IsGpuEnabled = True
+computer.IsMotherboardEnabled = True
 computer.Open()
+
+
+# Вспомогательные функции рекурсивного обхода железа (для 12+ gen Intel)
+def update_hardware(hw):
+    hw.Update()
+    for sub in hw.SubHardware:
+        update_hardware(sub)
+
+
+def get_sensors(hw):
+    result = []
+    for sensor in hw.Sensors:
+        result.append(sensor)
+    for sub in hw.SubHardware:
+        result.extend(get_sensors(sub))
+    return result
 
 
 def get_hardware_data():
@@ -33,37 +50,50 @@ def get_hardware_data():
     cpu_power = 0
     gpu_stats = {'usage': 0, 'temp': 0, 'power': 0, 'mem_percent': 0}
 
+    # Обновляем всё дерево компонентов
     for hw in computer.Hardware:
-        hw.Update()
+        update_hardware(hw)
+
+    for hw in computer.Hardware:
         hw_type = str(hw.HardwareType).lower()
+        sensors = get_sensors(hw)
 
         # Парсинг процессора (УНИВЕРСАЛЬНЫЙ ДЛЯ INTEL И AMD)
         if "cpu" in hw_type:
-            for sensor in hw.Sensors:
-                if sensor.Value is None: continue
+            core_temps = []
+            for sensor in sensors:
+                if sensor.Value is None:
+                    continue
                 s_type = str(sensor.SensorType).lower()
                 s_name = str(sensor.Name).lower()
 
                 if s_type == "temperature":
+                    if "distance to tjmax" in s_name:
+                        continue
+
+                    # Приоритет: Package (Intel) или Tctl/Tdie (AMD)
                     if "package" in s_name or "tctl" in s_name or "tdie" in s_name:
                         cpu_temp = int(sensor.Value)
-
-                    elif "core" in s_name and cpu_temp == 0:
-                        cpu_temp = int(sensor.Value)
+                    elif "core" in s_name:
+                        core_temps.append(int(sensor.Value))
 
                 elif s_type == "power" and "package" in s_name:
                     cpu_power = int(sensor.Value)
 
-            if cpu_temp == 0:
-                for sensor in hw.Sensors:
+            if cpu_temp == 0 and core_temps:
+                cpu_temp = max(core_temps)
+            elif cpu_temp == 0:
+                for sensor in sensors:
                     if sensor.Value is not None and str(sensor.SensorType).lower() == "temperature":
-                        cpu_temp = int(sensor.Value)
-                        break
+                        if "distance to tjmax" not in str(sensor.Name).lower():
+                            cpu_temp = int(sensor.Value)
+                            break
 
         # Парсинг видеокарты
         elif "gpu" in hw_type:
-            for sensor in hw.Sensors:
-                if sensor.Value is None: continue
+            for sensor in sensors:
+                if sensor.Value is None:
+                    continue
                 s_type = str(sensor.SensorType).lower()
                 s_name = str(sensor.Name).lower()
 
@@ -75,7 +105,8 @@ def get_hardware_data():
                     elif "memory" in s_name:
                         gpu_stats['mem_percent'] = int(sensor.Value)
                 elif s_type == "power":
-                    if gpu_stats['power'] == 0: gpu_stats['power'] = int(sensor.Value)
+                    if gpu_stats['power'] == 0:
+                        gpu_stats['power'] = int(sensor.Value)
 
     return cpu_temp, cpu_power, gpu_stats
 
@@ -183,7 +214,6 @@ try:
         # Сбор данных напрямую через DLL и psutil
         cpu_temp, cpu_power, gpu_stats = get_hardware_data()
         cpu = int(psutil.cpu_percent())
-
         # Оптимизация опроса памяти
         mem_info = psutil.virtual_memory()
         mem_percent = int(mem_info.percent)
@@ -206,11 +236,10 @@ try:
 
         # Отправка пакета на Ардуино
         data_packet = f"<CPU:{cpu},{cpu_temp},{cpu_power},GPU:{gpu_stats['usage']},{gpu_stats['temp']},{gpu_stats['power']},RAM:{mem_percent},{mem_used},{mem_total},GPUMEM:{gpu_stats['mem_percent']}\n"
-
         try:
-            print(f"Отправка: {data_packet.strip()}")  # Отладка: видим, что уходит в провод
+            print(f"Отправка: {data_packet.strip()}")
             arduino.write(data_packet.encode('ascii'))
-            arduino.flush()  # Принудительно выталкиваем данные
+            arduino.flush()
         except Exception as e:
             print(f"Ошибка передачи: {e}")
 
@@ -219,6 +248,8 @@ try:
 except KeyboardInterrupt:
     print("\nМониторинг остановлен.")
 finally:
-    if wb: wb.save(filename)
-    if arduino and arduino.is_open: arduino.close()
+    if wb:
+        wb.save(filename)
+    if arduino and arduino.is_open:
+        arduino.close()
     computer.Close()
